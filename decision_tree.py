@@ -2,9 +2,7 @@ import numpy as np
 
 
 class Node:
-    def __init__(
-        self, feature=None, threshold=None, left=None, right=None, *, value=None
-    ):
+    def __init__(self, feature=None, threshold=None, left=None, right=None, value=None):
         self.feature = feature
         self.threshold = threshold
         self.left = left
@@ -13,75 +11,69 @@ class Node:
 
 
 class DecisionTree:
-    def __init__(self, max_depth=5):
+    def __init__(self, max_depth=3):
         self.max_depth = max_depth
         self.root = None
 
     def fit(self, X, y):
         self.root = self._build_tree(X, y, depth=0)
 
-    def _gini(self, y):
-        m = len(y)
-        if m == 0:
-            return 0
-        p1 = len(y[y == 1]) / m
-        p0 = 1 - p1
-        return 1 - (p0**2 + p1**2)
+    def _build_tree(self, X, y, depth):
+        n_samples, n_features = X.shape
+        n_labels = len(np.unique(y))
 
-    def _best_split(self, X, y):
-        m, n = X.shape
-        best_gini = float("inf")
-        best_idx, best_thr = None, None
+        # Stopping criteria
+        if depth >= self.max_depth or n_labels == 1:
+            return Node(value=self._most_common_label(y))
 
-        for feature_idx in range(n):
-            thresholds = np.unique(X[:, feature_idx])
-            for thr in thresholds:
-                left_mask = X[:, feature_idx] <= thr
-                right_mask = X[:, feature_idx] > thr
+        best_feat, best_thresh = self._best_criteria(X, y)
+        if best_feat is None:
+            return Node(value=self._most_common_label(y))
 
-                if sum(left_mask) == 0 or sum(right_mask) == 0:
+        left_idxs, right_idxs = self._split(X[:, best_feat], best_thresh)
+        left = self._build_tree(X[left_idxs, :], y[left_idxs], depth + 1)
+        right = self._build_tree(X[right_idxs, :], y[right_idxs], depth + 1)
+        return Node(best_feat, best_thresh, left, right)
+
+    def _best_criteria(self, X, y):
+        best_gini = 1.0
+        split_idx, split_thresh = None, None
+
+        # Sampling threshold untuk efisiensi (opsional, tapi bantu di data besar)
+        for feat_idx in range(X.shape[1]):
+            thresholds = np.unique(X[:, feat_idx])
+            for threshold in thresholds:
+                left_idxs, right_idxs = self._split(X[:, feat_idx], threshold)
+                if len(left_idxs) == 0 or len(right_idxs) == 0:
                     continue
-
-                gini_left = self._gini(y[left_mask])
-                gini_right = self._gini(y[right_mask])
-
-                # Weighted Gini Impurity
-                n_left, n_right = sum(left_mask), sum(right_mask)
-                gini = (n_left / m) * gini_left + (n_right / m) * gini_right
-
+                gini = self._gini_impurity(y[left_idxs], y[right_idxs])
                 if gini < best_gini:
                     best_gini = gini
-                    best_idx = feature_idx
-                    best_thr = thr
+                    split_idx = feat_idx
+                    split_thresh = threshold
+        return split_idx, split_thresh
 
-        return best_idx, best_thr
+    def _split(self, X_column, split_thresh):
+        left_idxs = np.argwhere(X_column <= split_thresh).flatten()
+        right_idxs = np.argwhere(X_column > split_thresh).flatten()
+        return left_idxs, right_idxs
 
-    def _build_tree(self, X, y, depth):
-        print(
-            f"\r[Decision Tree Fit] Memproses kedalaman pohon (depth): {depth}...",
-            end="",
-            flush=True,
-        )
-        # Base cases: node murni atau mencapai max depth
-        num_samples_per_class = [np.sum(y == i) for i in np.unique(y)]
-        predicted_class = (
-            np.argmax(num_samples_per_class) if len(num_samples_per_class) > 0 else 0
-        )
+    def _gini_impurity(self, left_y, right_y):
+        n = len(left_y) + len(right_y)
+        p_left, p_right = len(left_y) / n, len(right_y) / n
 
-        if len(np.unique(y)) == 1 or depth >= self.max_depth or len(y) < 2:
-            return Node(value=predicted_class)
+        def gini(y):
+            _, counts = np.unique(y, return_counts=True)
+            probs = counts / len(y)
+            return 1.0 - np.sum(probs**2)
 
-        feat_idx, threshold = self._best_split(X, y)
-        if feat_idx is None:
-            return Node(value=predicted_class)
+        return p_left * gini(left_y) + p_right * gini(right_y)
 
-        left_mask = X[:, feat_idx] <= threshold
-        right_mask = X[:, feat_idx] > threshold
+    def _most_common_label(self, y):
+        return np.bincount(y).argmax()
 
-        left_child = self._build_tree(X[left_mask], y[left_mask], depth + 1)
-        right_child = self._build_tree(X[right_mask], y[right_mask], depth + 1)
-
-        return Node(feat_idx, threshold, left_child, right_child)
+    def predict(self, X):
+        return np.array([self._traverse_tree(x, self.root) for x in X])
 
     def _traverse_tree(self, x, node):
         if node.value is not None:
@@ -89,6 +81,3 @@ class DecisionTree:
         if x[node.feature] <= node.threshold:
             return self._traverse_tree(x, node.left)
         return self._traverse_tree(x, node.right)
-
-    def predict(self, X):
-        return np.array([self._traverse_tree(x, self.root) for x in X])
