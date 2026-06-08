@@ -39,11 +39,15 @@ class DecisionTree:
         best_gini = 1.0
         split_idx, split_thresh = None, None
 
-        # Sampling threshold untuk efisiensi (opsional, tapi bantu di data besar)
         for feat_idx in range(X.shape[1]):
-            thresholds = np.unique(X[:, feat_idx])
+            X_column = X[:, feat_idx]
+            thresholds = np.unique(X_column)
+
+            if len(thresholds) > 50:
+                thresholds = np.percentile(X_column, np.linspace(0, 100, 50))
+
             for threshold in thresholds:
-                left_idxs, right_idxs = self._split(X[:, feat_idx], threshold)
+                left_idxs, right_idxs = self._split(X_column, threshold)
                 if len(left_idxs) == 0 or len(right_idxs) == 0:
                     continue
                 gini = self._gini_impurity(y[left_idxs], y[right_idxs])
