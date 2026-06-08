@@ -1,4 +1,4 @@
 .venv
 __pycache__
 output
-data/
+SP500_Historical_Data.csv
