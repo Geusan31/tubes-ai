@@ -27,16 +27,6 @@ np.random.seed(42)
 os.makedirs("output", exist_ok=True)
 
 DATA_PATH = "data/SP500_Historical_Data.csv"
-FEATURE_NAMES = [
-    "RSI",
-    "MACD",
-    "BB_Upper",
-    "BB_Lower",
-    "SMA_20",
-    "EMA_12",
-    "Close",
-    "Volume_Change",
-]
 
 
 def main():
@@ -55,8 +45,7 @@ def main():
     print("\n" + "═" * 62)
     print("  STEP 2: Feature Engineering — Indikator Teknikal")
     print("═" * 62)
-    X, y = add_technical_indicators(df)
-    print(f"  ✓ Fitur: {FEATURE_NAMES}")
+    X, y, feature_names_used = add_technical_indicators(df)
     print(f"  ✓ Shape X={X.shape}, y={y.shape}")
 
     # ═══════════════════════════════════════════════════════════════
@@ -66,7 +55,7 @@ def main():
     print("\n" + "═" * 62)
     print("  STEP 3: Train/Test Split (70:30 — time-series order)")
     print("═" * 62)
-    split = int(len(X) * 0.7)
+    split = int(len(X) * 0.8)
     X_train, X_test = X[:split], X[split:]
     y_train, y_test = y[:split], y[split:]
 
@@ -109,7 +98,7 @@ def main():
         min_samples_split=20,
         min_samples_leaf=10,
         max_thresholds=30,
-        feature_names=FEATURE_NAMES,
+        feature_names=feature_names_used,
     )
     dt_model.fit(X_train, y_train)
 

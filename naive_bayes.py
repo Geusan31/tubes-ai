@@ -25,7 +25,16 @@ class GaussianNaiveBayes:
 
     Asumsi: setiap fitur berdistribusi normal (Gaussian) secara
     independen kondisional terhadap kelasnya.
+
+    Parameter:
+      var_smoothing      : nilai minimum variansi (hindari div-by-zero)
+      use_uniform_prior  : jika True, gunakan P(c)=1/K untuk semua kelas
+                           (mencegah bias akibat sedikit ketidakseimbangan label)
     """
+
+    def __init__(self, var_smoothing=1e-9, use_uniform_prior=True):
+        self.var_smoothing     = var_smoothing
+        self.use_uniform_prior = use_uniform_prior
 
     def fit(self, X, y):
         """
@@ -36,9 +45,9 @@ class GaussianNaiveBayes:
           1. Identifikasi semua kelas unik (0=Sell, 1=Buy)
           2. Untuk setiap kelas c:
              a. Pisahkan sampel X_c = X[y == c]
-             b. Hitung prior: P(c) = |X_c| / |X|
+             b. Hitung prior: uniform (0.5,0.5) atau empiris
              c. Hitung mean μ per fitur
-             d. Hitung variance σ² per fitur (+ smoothing 1e-9)
+             d. Hitung variance σ² per fitur (+ smoothing)
         """
         self.classes_ = np.unique(y)
         n_classes      = len(self.classes_)
@@ -49,11 +58,15 @@ class GaussianNaiveBayes:
         self.priors_ = np.zeros(n_classes, dtype=np.float64)
 
         print(f"    [NB] Training pada {n_samples:,} sampel, {n_features} fitur")
+        print(f"    [NB] Prior: {'uniform (1/K)' if self.use_uniform_prior else 'empiris'}")
         for idx, c in enumerate(self.classes_):
             X_c = X[y == c]
-            self.priors_[idx] = X_c.shape[0] / n_samples
+            if self.use_uniform_prior:
+                self.priors_[idx] = 1.0 / n_classes
+            else:
+                self.priors_[idx] = X_c.shape[0] / n_samples
             self.mean_[idx]   = X_c.mean(axis=0)
-            self.var_[idx]    = X_c.var(axis=0) + 1e-9   # Laplace/var smoothing
+            self.var_[idx]    = X_c.var(axis=0) + self.var_smoothing
             label = "Buy (1)" if c == 1 else "Sell (0)"
             print(f"    [NB]   Kelas {label}: {X_c.shape[0]:,} sampel | "
                   f"prior={self.priors_[idx]:.4f}")

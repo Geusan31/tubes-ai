@@ -418,43 +418,16 @@ Hari terakhir setiap saham selalu `NaN` karena tidak ada data hari berikutnya, l
 
 ---
 
-### 6.2 Normalisasi Min-Max Manual
+### 6.2 Normalisasi Min-Max
 
-Setelah semua indikator dihitung, nilai fitur perlu dinormalisasi agar semua fitur berada di rentang [0, 1]. Ini penting karena:
+Nilai fitur perlu dinormalisasi agar semua fitur berada di rentang [0, 1]. Ini penting karena:
 - Close bisa bernilai ratusan hingga ribuan dolar
 - MACD bernilai kecil (bisa -10 hingga +10)
 - Volume_Change dikliping ke [-5, 5]
 
 Tanpa normalisasi, KNN akan didominasi oleh fitur dengan skala besar (Close).
 
-```python
-# Baris 40–44 di features.py (area yang kamu pilih)
-X_min = X.min(axis=0)           # nilai minimum per kolom/fitur
-X_max = X.max(axis=0)           # nilai maksimum per kolom/fitur
-denom = np.where((X_max - X_min) == 0, 1.0, X_max - X_min)
-X     = (X - X_min) / denom
-```
-
-**Formula Min-Max:**
-```
-X_norm(i, j) = (X(i, j) - X_min(j)) / (X_max(j) - X_min(j))
-```
-
-**Contoh numerik** (fitur Close):
-```
-Close = [95, 100, 110, 120, 105]
-X_min = 95
-X_max = 120
-denom = 120 - 95 = 25
-
-Nilai 100 → (100 - 95) / 25 = 5/25 = 0.20
-Nilai 110 → (110 - 95) / 25 = 15/25 = 0.60
-Nilai 120 → (120 - 95) / 25 = 25/25 = 1.00
-Nilai 95  → (95  - 95) / 25 = 0/25  = 0.00
-```
-
-**Kenapa `np.where((X_max - X_min) == 0, 1.0, ...)`?**
-Jika sebuah fitur konstant (semua nilai sama), maka `X_max - X_min = 0`. Pembagian dengan nol akan menghasilkan `NaN`. `np.where` menggantinya dengan `1.0` sebagai penyebut, sehingga `(X - X_min) / 1.0 = 0` — fitur tetap bernilai nol (seragam, tidak informatif).
+> **Catatan penting:** Normalisasi **tidak** lagi dilakukan di `features.py`. Ia dipindahkan ke `main.py` setelah train/test split untuk menghindari **data leakage** — lihat STEP 3.
 
 **Distribusi label hasil feature engineering:**
 ```
@@ -465,7 +438,7 @@ Dataset hampir seimbang — tidak perlu teknik resampling seperti SMOTE.
 
 ---
 
-## 7. STEP 3 — Train/Test Split
+## 7. STEP 3 — Train/Test Split & Normalisasi
 
 ### Pembagian 70:30 Time-Series
 
@@ -476,6 +449,54 @@ X_test   = X[split:]               # 29,870 sampel terakhir
 y_train  = y[:split]
 y_test   = y[split:]
 ```
+
+### Normalisasi Min-Max (setelah split)
+
+```python
+# Fit HANYA pada X_train — X_test tidak boleh mempengaruhi skala
+X_min   = X_train.min(axis=0)
+X_max   = X_train.max(axis=0)
+denom   = np.where((X_max - X_min) == 0, 1.0, X_max - X_min)
+X_train = (X_train - X_min) / denom
+X_test  = (X_test  - X_min) / denom
+```
+
+**Formula:**
+```
+X_scaled = (X - X_min_train) / (X_max_train - X_min_train)
+```
+
+**Mengapa normalisasi harus setelah split?**
+
+Jika normalisasi dihitung dari seluruh data (train+test):
+- `X_min` dan `X_max` mengandung informasi dari data test
+- Model secara tidak langsung "melihat" rentang nilai test saat training
+- Ini disebut **data leakage** — hasil evaluasi jadi terlalu optimistis
+
+Dengan fit pada train saja:
+- Skala ditentukan murni dari data training
+- Test data di-transform menggunakan skala yang sama, tanpa mempengaruhinya
+- Mencerminkan kondisi deployment nyata: skala hanya diketahui dari data historis
+
+**Contoh numerik** (fitur Close):
+```
+X_train Close = [95, 100, 110, 120, 105]
+X_min_train   = 95
+X_max_train   = 120,  denom = 25
+
+X_train setelah normalisasi:
+  95  → (95-95)/25  = 0.00
+  100 → (100-95)/25 = 0.20
+  110 → (110-95)/25 = 0.60
+  120 → (120-95)/25 = 1.00
+  105 → (105-95)/25 = 0.40
+
+X_test Close = [125, 90]   ← nilai di luar range train
+  125 → (125-95)/25 = 1.20  (boleh > 1, tidak di-clip)
+  90  → (90-95)/25  = -0.20 (boleh < 0, tidak di-clip)
+```
+
+Nilai test bisa di luar [0,1] — ini wajar dan benar, karena skala tetap konsisten dengan training.
 
 ### Mengapa Tidak Di-Shuffle?
 
@@ -974,121 +995,72 @@ Karena k ganjil (7), tidak mungkin terjadi seri 3.5 vs 3.5.
 
 ## 9. Hybrid Pipeline (hybrid_pipeline.py)
 
-### Arsitektur
+### Arsitektur: Majority Vote
 
-Pipeline hybrid menggabungkan ketiga model dalam **tiga tahap berurutan**, di mana setiap tahap hanya memproses sampel yang "lolos" dari filter tahap sebelumnya.
+Ketiga model memberikan **satu suara** pada **setiap sampel**. Kelas dengan ≥ 2 suara dari 3 menjadi prediksi final.
 
 ```
-                         ┌──────────────────────────────┐
-  X_test (29,870)  ──→   │  STAGE 1: Naive Bayes        │
-                         │  Hitung P(Buy|x), P(Sell|x)  │
-                         └──────────────────────────────┘
-                                    │
-                    ┌───────────────┴─────────────────┐
-                    │                                   │
-            confidence < 0.60                   confidence ≥ 0.60
-            (27,479 sampel)                     (2,391 sampel)
-                    │                                   │
-            output NB langsung              ┌──────────▼──────────────┐
-                                            │  STAGE 2: Decision Tree  │
-                                            │  Traversal pohon IF-THEN │
-                                            └──────────────────────────┘
-                                                       │
-                                       ┌───────────────┴──────────────┐
-                                       │                               │
-                                   NB ≠ DT                         NB = DT
-                                  (385 sampel)                   (2,006 sampel)
-                                       │                               │
-                                   pakai DT              ┌────────────▼──────────┐
-                                                         │  STAGE 3: KNN         │
-                                                         │  k=7 tetangga historis │
-                                                         └───────────────────────┘
-                                                                    │
-                                                       ┌────────────┴──────────┐
-                                                       │                        │
-                                                  KNN = DT               KNN ≠ DT
-                                                 (1,295 sampel)          (711 sampel)
-                                                       │                        │
-                                                  konfirmasi DT          KNN menang
+  X_test (n sampel)
+         │
+    ┌────┼────┐
+    ▼    ▼    ▼
+   NB   DT  KNN     ← ketiga model prediksi SEMUA sampel
+  vote vote vote
+  (0/1)(0/1)(0/1)
+    └────┼────┘
+         ▼
+   total = NB + DT + KNN   ∈ {0, 1, 2, 3}
+   final = 1 (Buy)  jika total ≥ 2
+         = 0 (Sell) jika total < 2
 ```
+
+**Empat kemungkinan hasil voting:**
+
+| total_votes | Artinya | Final |
+|---|---|---|
+| 3 | Semua sepakat Buy | Buy (1) — keyakinan tertinggi |
+| 2 | Mayoritas Buy | Buy (1) |
+| 1 | Mayoritas Sell | Sell (0) |
+| 0 | Semua sepakat Sell | Sell (0) — keyakinan tertinggi |
 
 ---
 
-### Detail Alur per Stage
-
-#### STAGE 1: Naive Bayes — Filter Confidence
+### Implementasi
 
 ```python
-nb_probs = self.nb.predict_proba(X)     # (29,870 × 2)
-nb_conf  = nb_probs.max(axis=1)         # confidence = prob kelas tertinggi
-nb_preds = nb_probs.argmax(axis=1)      # prediksi kelas
+# Vote 1: Naive Bayes (soft → hard)
+nb_probs  = self.nb.predict_proba(X)   # (n, 2)
+nb_votes  = nb_probs.argmax(axis=1)    # 0 atau 1
 
-low_mask  = nb_conf < self.threshold    # confidence < 0.60
-high_mask = ~low_mask
+# Vote 2: Decision Tree
+dt_votes  = self.dt.predict(X)         # 0 atau 1
 
-final_preds[low_mask] = nb_preds[low_mask]  # langsung output NB
+# Vote 3: KNN
+knn_votes = self.knn.predict(X)        # 0 atau 1
+
+# Majority vote
+total_votes = nb_votes + dt_votes + knn_votes
+final_preds = (total_votes >= 2).astype(np.int32)
 ```
-
-**Hasil aktual:**
-```
-Confidence < 0.60: 27,479 sampel → langsung prediksi NB (91.99%)
-Confidence ≥ 0.60: 2,391 sampel → lanjut Stage 2  (8.01%)
-```
-
-**Interpretasi:** Sebagian besar sampel (91.99%) memiliki NB confidence rendah, artinya NB tidak yakin. Ini karena asumsi independensi NB tidak terpenuhi sempurna untuk data finansial yang sangat berkorelasi. Sampel yang NB sangat yakin (confidence ≥ 60%) langsung diambil prediksinya, sisanya diteruskan ke model yang lebih kuat.
 
 ---
 
-#### STAGE 2: Decision Tree — Penanganan Konflik
+### Mengapa Desain Ini Lebih Baik dari Cascade Sebelumnya?
 
-```python
-dt_preds    = self.dt.predict(X_high)      # prediksi DT untuk 2,391 sampel
-agree_mask  = nb_preds[high_mask] == dt_preds
-disagree_mask = ~agree_mask
+**Masalah cascade lama:**
+- NB berperan sebagai *penjaga gerbang* via confidence threshold 0.60
+- Karena semua fitur berkorelasi tinggi (semua dari `Close`), asumsi independensi NB dilanggar → probabilitas NB tidak terkalibrasi → confidence hampir selalu < 0.60
+- Akibatnya: 92% sampel hanya ditangani NB saja, DT dan KNN hampir tidak terpakai
 
-final_preds[high_indices[disagree_mask]] = dt_preds[disagree_mask]
-```
+**Keunggulan majority vote:**
 
-**Hasil aktual:**
-```
-NB ≠ DT: 385 sampel → pakai DT
-NB = DT: 2,006 sampel → lanjut Stage 3
-```
-
-**Mengapa DT menang saat konflik?**
-Decision Tree lebih **rule-based dan interpretable** — setiap keputusan ada aturan eksplisit IF-THEN berbasis threshold nyata. Saat NB dan DT tidak sepakat, DT dianggap lebih definitif karena ia menangkap interaksi antar fitur secara struktural.
-
----
-
-#### STAGE 3: KNN — Validator Akhir
-
-```python
-knn_preds  = self.knn.predict(X_agree)     # KNN untuk 2,006 sampel sepakat
-final_vote = np.where(knn_preds == dt_agree, dt_agree, knn_preds)
-final_preds[high_indices[agree_mask]] = final_vote
-```
-
-**Hasil aktual:**
-```
-KNN konfirmasi DT: 1,295 sampel
-KNN override DT  :   711 sampel
-```
-
-**Logika voting:**
-- Jika KNN = DT: kedua model sepakat → gunakan nilai tersebut (konfirmasi)
-- Jika KNN ≠ DT: KNN menang sebagai **validator akhir berbasis kemiripan historis**
-
-KNN cocok sebagai validator karena ia mencari situasi historis yang paling mirip secara matematis — jika 4 dari 7 kasus historis serupa berakhir dengan Buy, prediksi Buy.
-
----
-
-#### Distribusi Prediksi Final Hybrid
-
-```
-Buy=27,966 | Sell=1,904
-```
-
-Hybrid sangat condong ke **Buy** — ini karena mayoritas sampel (91.99%) ditangani NB yang memiliki recall Buy sangat tinggi (96.26%), sehingga bias NB mendominasi.
+| Aspek | Cascade (lama) | Majority Vote (baru) |
+|---|---|---|
+| Coverage DT | ~8% sampel | 100% sampel |
+| Coverage KNN | ~6.7% sampel | 100% sampel |
+| Threshold arbitrary | Ya (0.60) | Tidak |
+| Kompensasi antar model | Tidak | Ya — 2 model koreksi 1 model |
+| Bias NB ke Buy | Mendominasi (92%) | Dikontrol oleh DT+KNN |
 
 ---
 
@@ -1197,6 +1169,8 @@ Specificity = TN / (TN + FP)
 
 ## 11. Output Aktual Setelah Dijalankan
 
+> **Catatan:** Output di bawah adalah hasil **sebelum perbaikan** (versi cascade lama + normalisasi bocor). Setelah perbaikan (majority vote + normalisasi benar), jalankan ulang `main.py` untuk mendapatkan angka terbaru.
+
 ### Naive Bayes
 ```
 Accuracy    : 0.5241  (52.41%)
@@ -1242,7 +1216,7 @@ TP=8,853  TN=6,254  FP=7,930  FN=6,833
 
 ---
 
-### Hybrid Pipeline (NB → DT → KNN)
+### Hybrid Pipeline — Cascade Lama (sebelum perbaikan)
 ```
 Accuracy    : 0.5203  (52.03%)
 Precision   : 0.5243
@@ -1251,17 +1225,21 @@ F1-Score    : 0.6718
 Specificity : 0.0620
 TP=14,662  TN=880  FP=13,304  FN=1,024
 ```
+Sangat mirip NB karena 92% sampel hanya ditangani NB.
 
 ---
 
 ## 12. Tabel Komparasi Final
+
+> Tabel di bawah adalah hasil **sebelum perbaikan**. Update setelah menjalankan ulang `main.py`.
 
 | METODE | ACCURACY | PRECISION | RECALL | F1-SCORE | SPECIFICITY |
 |---|---|---|---|---|---|
 | Naive Bayes | **0.5241** | 0.5256 | **0.9626** | **0.6800** | 0.0393 |
 | Decision Tree | 0.5222 | **0.5269** | 0.8826 | 0.6599 | 0.1235 |
 | K-Nearest Neighbors | 0.5058 | 0.5275 | 0.5644 | 0.5453 | **0.4409** |
-| Hybrid (NB→DT→KNN) | 0.5203 | 0.5243 | 0.9347 | 0.6718 | 0.0620 |
+| Hybrid Cascade (lama) | 0.5203 | 0.5243 | 0.9347 | 0.6718 | 0.0620 |
+| **Hybrid Majority Vote (baru)** | *jalankan ulang* | *jalankan ulang* | *jalankan ulang* | *jalankan ulang* | *jalankan ulang* |
 
 ---
 
@@ -1300,15 +1278,28 @@ Dalam konteks trading: model ini hampir selalu bilang "beli" → berhasil menang
 
 ---
 
-### Hybrid: Antara NB dan KNN dalam Hal Keseimbangan
+### Hybrid Cascade Lama: Masalah Arsitektur
 
-Hybrid menghasilkan Specificity 6.20% — lebih baik dari NB (3.93%) tapi jauh lebih buruk dari KNN (44.09%). Ini karena 91.99% sampel ditangani langsung oleh NB (yang bias ke Buy), sementara hanya 8.01% yang mencapai DT dan KNN.
+Hybrid cascade menghasilkan Specificity hanya 6.20% — hampir sama dengan NB (3.93%) karena 91.99% sampel cuma ditangani NB. DT dan KNN hampir tidak berpengaruh.
 
-**Implikasi arsitektur:** Untuk Hybrid lebih efektif, threshold confidence NB bisa dinaikkan (misal 0.75) agar lebih banyak sampel mencapai DT dan KNN. Atau ambang batas logika voting bisa diubah.
+**Akar masalah cascade:**
+- NB confidence threshold 0.60 terlalu tinggi untuk data berkorelasi tinggi
+- Semua fitur (RSI, MACD, SMA, EMA, BB) berasal dari `Close` yang sama → NB melanggar asumsi independensi → probabilitas tidak terkalibrasi → confidence selalu < 0.60
+
+**Solusi diterapkan:** Arsitektur diubah ke **Majority Vote** — ketiga model dipakai pada 100% data, saling mengkompensasi kelemahan masing-masing.
 
 ---
 
-### Naive Bayes Menang F1-Score
+### Ekspektasi Setelah Perbaikan (Majority Vote)
+
+Dengan majority vote, KNN yang memiliki Specificity 44.09% kini dipakai pada semua sampel. Ketika NB (bias Buy) berhadapan dengan KNN (lebih seimbang), hasilnya diharapkan:
+- Specificity Hybrid **naik signifikan** (mendekati rata-rata NB+DT+KNN)
+- Recall Hybrid **turun** dari 93.47% (tidak lagi bias Buy ekstrem)
+- Accuracy dan F1 **lebih seimbang**
+
+---
+
+### Naive Bayes Menang F1-Score (Sebelum Perbaikan)
 
 NB memiliki F1 tertinggi (0.6800) karena F1 adalah harmonic mean Precision-Recall, dan NB memiliki Recall sangat tinggi (0.9626) meskipun Precision hanya sedang (0.5256). Harmonic mean lebih tinggi ketika satu nilai sangat tinggi.
 
@@ -3052,116 +3043,68 @@ Verifikasi: 1.864 + 45.617 + 1.965 + 50.553 = 99.999 ≈ 100% ✓
 
 ---
 
-### G.1 — NB Confidence
+### G.1 — Majority Vote
 
-**Rumus dari kode (`hybrid_pipeline.py:74-75`):**
+**Rumus dari kode (`hybrid_pipeline.py:86-87`):**
 ```python
-nb_conf  = nb_probs.max(axis=1)
-nb_preds = nb_probs.argmax(axis=1)
+total_votes = nb_votes + dt_votes + knn_votes
+final_preds = (total_votes >= 2).astype(np.int32)
 ```
 
 **Definisi:**
 ```
-confidence(x) = max(P(Buy|x), P(Sell|x))
-```
+nb_votes  = argmax P(y|x)   → 0 atau 1
+dt_votes  = DT.predict(x)   → 0 atau 1
+knn_votes = KNN.predict(x)  → 0 atau 1
 
-**Contoh 1 — confidence tinggi:**
-```
-NB output: P(Buy|x) = 0.9993, P(Sell|x) = 0.0007
-
-confidence = max(0.9993, 0.0007) = 0.9993
-threshold  = 0.60
-
-0.9993 ≥ 0.60 → HIGH confidence → lanjut ke Stage 2 (DT)
-prediksi NB = argmax(index) = index 0 = Buy (1)
-```
-
-**Contoh 2 — confidence rendah:**
-```
-NB output: P(Buy|x) = 0.54, P(Sell|x) = 0.46
-
-confidence = max(0.54, 0.46) = 0.54
-
-0.54 < 0.60 → LOW confidence → output NB langsung = Buy (1)
+total = nb_votes + dt_votes + knn_votes   ∈ {0, 1, 2, 3}
+final = 1 (Buy)  jika total ≥ 2
+      = 0 (Sell) jika total < 2
 ```
 
 ---
 
-### G.2 — Stage 2: Persetujuan NB vs DT
+### G.2 — Contoh Voting per Sampel
 
-**Rumus dari kode (`hybrid_pipeline.py:108`):**
-```python
-agree_mask    = nb_p_high == dt_preds
-disagree_mask = ~agree_mask
-```
+**5 sampel contoh:**
 
-**Contoh — 5 sampel high-confidence:**
+| Sampel | NB vote | DT vote | KNN vote | total | final |
+|--------|---------|---------|----------|-------|-------|
+| A      | 1 (Buy) | 1 (Buy) | 1 (Buy)  | 3     | Buy (suara bulat) |
+| B      | 0 (Sell)| 0 (Sell)| 0 (Sell) | 0     | Sell (suara bulat) |
+| C      | 1 (Buy) | 1 (Buy) | 0 (Sell) | 2     | Buy (mayoritas) |
+| D      | 0 (Sell)| 1 (Buy) | 0 (Sell) | 1     | Sell (mayoritas) |
+| E      | 1 (Buy) | 0 (Sell)| 1 (Buy)  | 2     | Buy (mayoritas) |
 
-| Sampel | NB pred | DT pred | Agree? | Output Stage 2 |
-|--------|---------|---------|--------|----------------|
-| A      | Buy     | Buy     | ✓ Ya   | → lanjut Stage 3 |
-| B      | Sell    | Sell    | ✓ Ya   | → lanjut Stage 3 |
-| C      | Buy     | Sell    | ✗ Tidak | → pakai DT = Sell |
-| D      | Sell    | Buy     | ✗ Tidak | → pakai DT = Buy |
-| E      | Buy     | Buy     | ✓ Ya   | → lanjut Stage 3 |
-
-```
-Sampel agree    (A, B, E) → 3 sampel → lanjut KNN
-Sampel disagree (C, D)   → 2 sampel → output DT langsung
-```
+**Kasus C:** NB dan DT setuju Buy, KNN setuju Sell → 2 vs 1 → **Buy menang**
+**Kasus D:** NB dan KNN setuju Sell, DT setuju Buy → 2 vs 1 → **Sell menang**
 
 ---
 
-### G.3 — Stage 3: KNN Validator (Final Vote)
+### G.3 — Perbandingan Cascade vs Majority Vote
 
-**Rumus dari kode (`hybrid_pipeline.py:139`):**
-```python
-final_vote = np.where(knn_preds == dt_agree, dt_agree, knn_preds)
+**Cascade lama — contoh 5 sampel:**
+```
+Sampel A: NB confidence=0.55 < 0.60 → output NB=Buy  (DT,KNN tidak dipakai)
+Sampel B: NB confidence=0.52 < 0.60 → output NB=Sell (DT,KNN tidak dipakai)
+Sampel C: NB confidence=0.72 ≥ 0.60 → ke DT
+  DT=Buy = NB=Buy → ke KNN
+  KNN=Sell ≠ DT=Buy → output KNN=Sell
+Sampel D: NB confidence=0.68 ≥ 0.60 → ke DT
+  DT=Buy ≠ NB=Sell → output DT=Buy
+Sampel E: NB confidence=0.48 < 0.60 → output NB=Buy  (DT,KNN tidak dipakai)
 ```
 
-**Definisi:**
+**Majority Vote baru — contoh 5 sampel yang sama:**
 ```
-output = DT  jika KNN = DT   (konfirmasi)
-output = KNN jika KNN ≠ DT   (KNN override)
+Sampel A: NB=Buy, DT=Buy, KNN=Sell  → total=2 → Buy
+Sampel B: NB=Sell, DT=Sell, KNN=Buy → total=1 → Sell
+Sampel C: NB=Buy, DT=Buy, KNN=Sell  → total=2 → Buy
+Sampel D: NB=Sell, DT=Buy, KNN=Sell → total=1 → Sell
+Sampel E: NB=Buy, DT=Buy, KNN=Buy   → total=3 → Buy
 ```
 
-**Contoh — melanjutkan dari 3 sampel agree (A, B, E):**
-
-| Sampel | DT pred | KNN pred | KNN = DT? | Output Final |
-|--------|---------|----------|-----------|--------------|
-| A      | Buy     | Buy      | ✓ Ya      | Buy (DT/KNN konfirmasi) |
-| B      | Sell    | Sell     | ✓ Ya      | Sell (DT/KNN konfirmasi) |
-| E      | Buy     | Sell     | ✗ Tidak   | Sell (KNN override DT) |
-
----
-
-### G.4 — Distribusi Aktual dari Program
-
-**Dari output program yang dijalankan:**
-```
-Total test = 29.870 sampel
-
-Stage 1 — NB:
-  Confidence < 0.60 (low)  = 27.479 sampel → output NB
-  Confidence ≥ 0.60 (high) = 2.391 sampel  → lanjut Stage 2
-
-  Persentase low  = 27.479 / 29.870 × 100 = 91.99%
-  Persentase high = 2.391  / 29.870 × 100 =  8.01%
-
-Stage 2 — DT (pada 2.391 sampel):
-  NB ≠ DT (disagree) = 385 sampel   → output DT
-  NB = DT (agree)    = 2.006 sampel → lanjut Stage 3
-
-  Persentase disagree = 385   / 2.391 × 100 = 16.10%
-  Persentase agree    = 2.006 / 2.391 × 100 = 83.90%
-
-Stage 3 — KNN (pada 2.006 sampel):
-  KNN = DT (konfirmasi) = 1.295 sampel → output DT
-  KNN ≠ DT (override)   =   711 sampel → output KNN
-
-  Persentase konfirmasi = 1.295 / 2.006 × 100 = 64.56%
-  Persentase override   =   711 / 2.006 × 100 = 35.44%
-```
+Semua model berkontribusi pada semua sampel.
 
 ---
 

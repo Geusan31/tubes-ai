@@ -53,16 +53,18 @@ def load_and_preprocess(filepath, sample_size=100000):
     df = df.sort_values(sort_cols).reset_index(drop=True)
 
     # Stratified sampling per ticker agar semua saham terwakili
+    # Catatan: pandas 2.x groupby().apply() membuang kolom groupby dari hasil,
+    # sehingga Ticker hilang. Solusi: loop eksplisit + pd.concat()
     if len(df) > sample_size and "Ticker" in df.columns:
         n_tickers = df["Ticker"].nunique()
         rows_per_ticker = max(
             60, sample_size // n_tickers
         )  # min 60 agar rolling window cukup
 
-        sampled = df.groupby("Ticker", group_keys=False).apply(
-            lambda g: g.tail(rows_per_ticker)
-        )
-        df = sampled.reset_index(drop=True)
+        parts = []
+        for _, group in df.groupby("Ticker", sort=False):
+            parts.append(group.tail(rows_per_ticker))
+        df = pd.concat(parts).reset_index(drop=True)
 
         # Trim ke sample_size jika masih terlalu besar
         if len(df) > sample_size:
