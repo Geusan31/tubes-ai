@@ -69,8 +69,18 @@ def main():
     split = int(len(X) * 0.7)
     X_train, X_test = X[:split], X[split:]
     y_train, y_test = y[:split], y[split:]
+
+    # Min-Max Normalisasi: fit HANYA pada train, lalu transform train & test
+    # (mencegah data leakage — test tidak boleh mempengaruhi skala training)
+    X_min  = X_train.min(axis=0)
+    X_max  = X_train.max(axis=0)
+    denom  = np.where((X_max - X_min) == 0, 1.0, X_max - X_min)
+    X_train = (X_train - X_min) / denom
+    X_test  = (X_test  - X_min) / denom
+
     print(f"  ✓ Train: {len(X_train):,} sampel")
     print(f"  ✓ Test : {len(X_test):,} sampel")
+    print(f"  ✓ Normalisasi Min-Max: fit pada train, transform train+test")
     buy_tr = int((y_train == 1).sum())
     sell_tr = int((y_train == 0).sum())
     buy_te = int((y_test == 1).sum())

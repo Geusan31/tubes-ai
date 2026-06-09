@@ -36,6 +36,16 @@ def load_and_preprocess(filepath, sample_size=100000):
     df = df[df["Close"] > 0]
     df = df.drop_duplicates()
 
+    # Deteksi kolom ticker secara fleksibel (Ticker / Symbol / ticker / symbol)
+    ticker_col = None
+    for candidate in ["Ticker", "Symbol", "ticker", "symbol", "TICKER", "SYMBOL"]:
+        if candidate in df.columns:
+            ticker_col = candidate
+            break
+    if ticker_col and ticker_col != "Ticker":
+        df = df.rename(columns={ticker_col: "Ticker"})
+        print(f"  ✓ Kolom ticker terdeteksi sebagai '{ticker_col}', diubah ke 'Ticker'")
+
     # Sortir: ticker dulu, lalu tanggal (penting untuk rolling window yang benar)
     sort_cols = ["Date"]
     if "Ticker" in df.columns:

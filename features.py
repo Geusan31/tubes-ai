@@ -37,12 +37,6 @@ def add_technical_indicators(df):
     X = df[features].values.astype(np.float64)
     y = df["Target"].values.astype(np.int32)
 
-    # Min-Max Normalisasi manual (from scratch)
-    X_min = X.min(axis=0)
-    X_max = X.max(axis=0)
-    denom = np.where((X_max - X_min) == 0, 1.0, X_max - X_min)
-    X = (X - X_min) / denom
-
     # Distribusi label
     unique, counts = np.unique(y, return_counts=True)
     print("  Distribusi label setelah feature engineering:")
