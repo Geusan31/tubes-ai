@@ -4,11 +4,11 @@ import numpy as np
 
 def add_technical_indicators(df):
     """
-    Hitung indikator teknikal per-ticker agar tidak cross-contaminate
-    antar saham yang berbeda.
+    Hitung indikator teknikal + lagged features per-ticker.
+    Target: harga Close hari berikutnya (regresi, bukan klasifikasi).
 
-    Catatan: pandas 2.x groupby().apply() membuang kolom groupby dari hasil.
-    Solusi: loop eksplisit + pd.concat() untuk mempertahankan kolom Ticker.
+    Catatan: pandas 2.x groupby().apply() membuang kolom groupby.
+    Solusi: loop eksplisit + pd.concat().
     """
     if "Ticker" in df.columns and df["Ticker"].nunique() > 1:
         parts = []
@@ -21,32 +21,52 @@ def add_technical_indicators(df):
     df = df.dropna().reset_index(drop=True)
 
     features = [
+        # Lagged prices — kunci utama R² tinggi (autokorelasi harga)
+        "Close_Lag_1",
+        "Close_Lag_2",
+        "Close_Lag_5",
+        # Momentum
+        "Momentum_5",
+        "Momentum_20",
+        # Moving averages
+        "MA_5",
+        "MA_20",
+        "MA_50",
+        # Volatility & oscillator
+        "Volatility_20",
         "RSI",
+        # MACD
         "MACD",
-        "MACD_Hist",       # MACD histogram (MACD - signal line)
+        "MACD_Hist",
+        # Returns
+        "Return_1d",
+        "Return_5d",
+        "Return_20d",
+        # Bollinger
         "BB_Upper",
         "BB_Lower",
-        "SMA_20",
-        "EMA_12",
-        "Close",
+        # Intraday
+        "High_Low_Range",
+        # Volume
         "Volume_Change",
-        "Return_1d",       # 1-day price return
-        "High_Low_Range",  # (High-Low)/Close — intraday volatility
+        # Temporal
+        "Month",
+        "DayOfWeek",
     ]
-    # Hanya pakai kolom yang benar-benar ada
     features = [f for f in features if f in df.columns]
 
-    X = df[features].values.astype(np.float64)
-    y = df["Target"].values.astype(np.int32)
+    X             = df[features].values.astype(np.float64)
+    y_price       = df["Target_Price"].values.astype(np.float64)  # Close besok (regresi)
+    current_close = df["Close"].values.astype(np.float64)         # Close hari ini
+    # Label biner: 1=Buy (harga naik), 0=Sell (harga turun) — untuk Naive Bayes
+    y_direction   = (y_price > current_close).astype(np.int32)
 
-    unique, counts = np.unique(y, return_counts=True)
+    buy_pct = y_direction.mean() * 100
     print(f"  Fitur aktif ({len(features)}): {features}")
-    print("  Distribusi label setelah feature engineering:")
-    for u, c in zip(unique, counts):
-        label = "Buy (1)" if u == 1 else "Sell (0)"
-        print(f"    {label}: {c:,} ({c/len(y)*100:.1f}%)")
+    print(f"  Target regresi  : harga Close besok  (${y_price.min():.2f} – ${y_price.max():.2f})")
+    print(f"  Target klasifikasi: Buy={buy_pct:.1f}%  Sell={100-buy_pct:.1f}%")
 
-    return X, y, features
+    return X, y_price, y_direction, features, current_close
 
 
 def _calc_indicators(df):
@@ -57,40 +77,62 @@ def _calc_indicators(df):
 
     df = df.copy()
 
-    # SMA & EMA
-    df["SMA_20"] = close.rolling(window=20).mean()
-    df["EMA_12"] = close.ewm(span=12, adjust=False).mean()
-    df["EMA_26"] = close.ewm(span=26, adjust=False).mean()
+    # ── Lagged close (paling penting untuk R² tinggi) ─────────────
+    df["Close_Lag_1"] = close.shift(1)
+    df["Close_Lag_2"] = close.shift(2)
+    df["Close_Lag_5"] = close.shift(5)
 
-    # MACD + histogram
-    df["MACD"]        = df["EMA_12"] - df["EMA_26"]
-    macd_signal       = df["MACD"].ewm(span=9, adjust=False).mean()
-    df["MACD_Hist"]   = df["MACD"] - macd_signal
+    # ── Moving averages ───────────────────────────────────────────
+    df["MA_5"]  = close.rolling(5,  min_periods=1).mean()
+    df["MA_20"] = close.rolling(20, min_periods=1).mean()
+    df["MA_50"] = close.rolling(50, min_periods=1).mean()
 
-    # Bollinger Bands
-    bb_std           = close.rolling(window=20).std()
-    df["BB_Upper"]   = df["SMA_20"] + 2 * bb_std
-    df["BB_Lower"]   = df["SMA_20"] - 2 * bb_std
+    # ── Momentum ──────────────────────────────────────────────────
+    df["Momentum_5"]  = close - close.shift(5)
+    df["Momentum_20"] = close - close.shift(20)
 
-    # RSI
-    delta            = close.diff()
-    gain             = delta.clip(lower=0).rolling(window=14).mean()
-    loss             = (-delta.clip(upper=0)).rolling(window=14).mean()
-    rs               = gain / loss.replace(0, np.nan)
-    df["RSI"]        = 100 - (100 / (1 + rs))
+    # ── Volatility ────────────────────────────────────────────────
+    df["Volatility_20"] = close.rolling(20, min_periods=1).std()
 
-    # 1-day return
+    # ── EMA & MACD ────────────────────────────────────────────────
+    ema12 = close.ewm(span=12, adjust=False).mean()
+    ema26 = close.ewm(span=26, adjust=False).mean()
+    df["MACD"]      = ema12 - ema26
+    macd_signal     = df["MACD"].ewm(span=9, adjust=False).mean()
+    df["MACD_Hist"] = df["MACD"] - macd_signal
+
+    # ── Bollinger Bands ───────────────────────────────────────────
+    bb_std          = close.rolling(20, min_periods=1).std()
+    df["BB_Upper"]  = df["MA_20"] + 2 * bb_std
+    df["BB_Lower"]  = df["MA_20"] - 2 * bb_std
+
+    # ── RSI ───────────────────────────────────────────────────────
+    delta           = close.diff()
+    gain            = delta.clip(lower=0).rolling(14, min_periods=1).mean()
+    loss            = (-delta.clip(upper=0)).rolling(14, min_periods=1).mean()
+    rs              = gain / loss.replace(0, np.nan)
+    df["RSI"]       = 100 - (100 / (1 + rs))
+
+    # ── Returns ───────────────────────────────────────────────────
     df["Return_1d"]  = close.pct_change().clip(-0.5, 0.5)
+    df["Return_5d"]  = ((close / (close.shift(5)  + 1e-10)) - 1) * 100
+    df["Return_20d"] = ((close / (close.shift(20) + 1e-10)) - 1) * 100
 
-    # Intraday range
+    # ── Intraday range ────────────────────────────────────────────
     if high is not None and low is not None:
         df["High_Low_Range"] = (high - low) / close
 
-    # Volume Change
+    # ── Volume ────────────────────────────────────────────────────
     if volume is not None:
         df["Volume_Change"] = volume.pct_change().fillna(0).clip(-5, 5)
 
-    # Label: 1 = harga besok naik (Buy), 0 = turun (Sell)
-    df["Target"] = (close.shift(-1) > close).astype(int)
+    # ── Temporal features ─────────────────────────────────────────
+    if "Date" in df.columns:
+        dates = pd.to_datetime(df["Date"])
+        df["Month"]     = dates.dt.month.astype(float)
+        df["DayOfWeek"] = dates.dt.dayofweek.astype(float)
+
+    # ── TARGET: harga Close besok (regresi) ───────────────────────
+    df["Target_Price"] = close.shift(-1)
 
     return df

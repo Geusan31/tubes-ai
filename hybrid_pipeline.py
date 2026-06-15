@@ -1,103 +1,72 @@
 """
 hybrid_pipeline.py
 ──────────────────
-Pipeline Hybrid: Majority Vote dari Naive Bayes + Decision Tree + KNN
-from scratch (numpy only).
+Pipeline Hybrid: Naive Bayes (classifier) + Decision Tree + KNN (regressors)
 
-ARSITEKTUR MAJORITY VOTE:
-  Ketiga model memberikan suara pada SETIAP sampel.
-  Kelas dengan ≥ 2 suara (dari 3) menjadi prediksi final.
+ARSITEKTUR:
+  NB  → prediksi arah (Buy=1 / Sell=0) dari probabilitas Bayesian
+  DT  → prediksi harga Close besok (regresi, MSE criterion)
+  KNN → prediksi harga Close besok (regresi, mean k-tetangga)
 
-  NB  : voting berbasis probabilitas (soft vote — P(Buy|x))
-  DT  : voting berbasis aturan IF-THEN (hard vote — 0 atau 1)
-  KNN : voting berbasis kemiripan historis (hard vote — 0 atau 1)
+  Final price = weighted average DT + KNN
+  Bobot disesuaikan berdasarkan R² masing-masing model pada training set.
 
-LOGIKA:
-  ┌────────────────────────────────────────┐
-  │  Untuk setiap sampel X[i]:            │
-  │                                        │
-  │  nb_vote  = argmax P(y|x)   → 0 or 1 │
-  │  dt_vote  = DT.predict(x)   → 0 or 1 │
-  │  knn_vote = KNN.predict(x)  → 0 or 1 │
-  │                                        │
-  │  total_votes = nb + dt + knn          │
-  │  final = 1 (Buy)  jika total ≥ 2     │
-  │        = 0 (Sell) jika total < 2      │
-  └────────────────────────────────────────┘
-
-KEUNGGULAN vs cascade lama:
-  - Ketiga model dipakai pada 100% data (bukan 8%)
-  - Tidak ada threshold confidence yang arbitrary
-  - Kelemahan satu model dikompensasi dua model lainnya
-  - Ketika ≥2 model sepakat → prediksi lebih reliable
+  NB berperan sebagai sinyal arah konfirmasi — confidence-nya bisa diekstrak
+  secara terpisah untuk analisis.
 """
-
-import numpy as np
-
 
 class HybridPipeline:
     """
-    Pipeline Hybrid Majority Vote tiga model.
+    Hybrid Ensemble: NB classifier + DT regressor + KNN regressor.
 
     Parameter:
-      nb_model  : instance GaussianNaiveBayes (sudah di-fit)
-      dt_model  : instance DecisionTree (sudah di-fit)
-      knn_model : instance KNearestNeighbors (sudah di-fit)
+      nb_model  : GaussianNaiveBayes (sudah di-fit pada y_direction)
+      dt_model  : DecisionTree regressor (sudah di-fit pada y_price)
+      knn_model : KNearestNeighbors regressor (sudah di-fit pada y_price)
+      weights   : (w_dt, w_knn) bobot price ensemble; None → bobot sama
     """
 
-    def __init__(self, nb_model, dt_model, knn_model, confidence_threshold=0.60):
+    def __init__(self, nb_model, dt_model, knn_model, weights=None, **_):
         self.nb  = nb_model
         self.dt  = dt_model
         self.knn = knn_model
-        # confidence_threshold dipertahankan untuk kompatibilitas signature
+        self.weights = weights if weights is not None else (1.0, 1.0)
+
+    def fit_weights(self, X_val, y_val_price):
+        """Sesuaikan bobot DT dan KNN berdasarkan R² pada data validasi."""
+        from evaluation import evaluate_regression
+
+        r2_dt,  *_ = evaluate_regression(y_val_price, self.dt.predict(X_val),  "DT (weight)")
+        r2_knn, *_ = evaluate_regression(y_val_price, self.knn.predict(X_val), "KNN (weight)")
+
+        w_dt  = max(0.0, r2_dt)
+        w_knn = max(0.0, r2_knn)
+        total = w_dt + w_knn or 1.0
+        self.weights = (w_dt / total, w_knn / total)
+        print(f"    [Hybrid] Bobot price: DT={self.weights[0]:.3f} | KNN={self.weights[1]:.3f}")
 
     def predict(self, X):
         """
-        Majority vote: setiap model memberikan satu suara pada setiap sampel.
+        Prediksi harga (weighted DT+KNN) dan arah (NB).
 
-        Langkah:
-          1. NB  → predict_proba → ambil kelas argmax (soft → hard vote)
-          2. DT  → predict langsung (hard vote)
-          3. KNN → predict langsung (hard vote)
-          4. Jumlahkan ketiga suara (0 atau 1 per model)
-          5. total ≥ 2 → Buy (1), total < 2 → Sell (0)
-
-        Return: ndarray shape (n_samples,) berisi 0 (Sell) atau 1 (Buy)
+        Return: y_pred_price (float ndarray, shape n)
         """
         n = len(X)
-        print(f"    [Hybrid] Majority Vote pada {n:,} sampel...")
+        print(f"    [Hybrid] Prediksi pada {n:,} sampel...")
 
-        # ── Vote 1: Naive Bayes ───────────────────────────────
-        print(f"    [Hybrid]   NB prediksi...")
-        nb_probs = self.nb.predict_proba(X)          # (n, 2)
-        nb_votes = nb_probs.argmax(axis=1)           # (n,) → 0 atau 1
+        w_dt, w_knn = self.weights
 
-        # ── Vote 2: Decision Tree ─────────────────────────────
-        print(f"    [Hybrid]   DT prediksi...")
-        dt_votes = self.dt.predict(X)                # (n,) → 0 atau 1
+        print(f"    [Hybrid]   NB arah...")
+        nb_probs = self.nb.predict_proba(X)           # (n,2)
+        self._last_nb_probs = nb_probs                # simpan untuk analisis
 
-        # ── Vote 3: KNN ───────────────────────────────────────
-        print(f"    [Hybrid]   KNN prediksi...")
-        knn_votes = self.knn.predict(X)              # (n,) → 0 atau 1
+        print(f"    [Hybrid]   DT harga...")
+        dt_price  = self.dt.predict(X)
 
-        # ── Majority Vote ─────────────────────────────────────
-        # total_votes ∈ {0, 1, 2, 3}
-        # ≥ 2 → Buy, < 2 → Sell
-        total_votes = nb_votes + dt_votes + knn_votes
-        final_preds = (total_votes >= 2).astype(np.int32)
+        print(f"    [Hybrid]   KNN harga...")
+        knn_price = self.knn.predict(X)
 
-        # ── Statistik voting ──────────────────────────────────
-        unanimous_buy  = int((total_votes == 3).sum())
-        unanimous_sell = int((total_votes == 0).sum())
-        split_buy      = int((total_votes == 2).sum())
-        split_sell     = int((total_votes == 1).sum())
-        buy_total      = int((final_preds == 1).sum())
-        sell_total     = int((final_preds == 0).sum())
-
-        print(f"    [Hybrid]   Suara bulat Buy  (3/3): {unanimous_buy:,}")
-        print(f"    [Hybrid]   Suara bulat Sell (0/3): {unanimous_sell:,}")
-        print(f"    [Hybrid]   Mayoritas Buy    (2/3): {split_buy:,}")
-        print(f"    [Hybrid]   Mayoritas Sell   (1/3): {split_sell:,}")
-        print(f"    [Hybrid] Prediksi final: Buy={buy_total:,} | Sell={sell_total:,}")
-
-        return final_preds
+        final = (w_dt * dt_price + w_knn * knn_price) / (w_dt + w_knn)
+        print(f"    [Hybrid]   Bobot: DT={w_dt:.3f} | KNN={w_knn:.3f}")
+        print(f"    [Hybrid]   Rentang: ${final.min():.2f} – ${final.max():.2f}")
+        return final

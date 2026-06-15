@@ -1,4 +1,53 @@
-.venv
-__pycache__
-output
-data/SP500_Historical_Data.csv
+# Virtual environments
+venv/
+.venv/
+env/
+.env/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pyc
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+*.egg
+
+# Jupyter Notebook
+.ipynb_checkpoints/
+*.ipynb
+
+# Data files
+data/
+*.csv
+*.xlsx
+*.xls
+*.json
+*.parquet
+
+# Output
+output/
+
+# IDE
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs
+*.log
+logs/
+
+# Environment variables
+.env
+.env.local
+*.env
